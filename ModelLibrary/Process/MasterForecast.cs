@@ -45,6 +45,7 @@ namespace ViennaAdvantageServer.Process
         int StdPrecision = 0;
         private Decimal? ConvertedAmt = null;
         private Decimal? OppQty = null;
+        private string ToCurrencyName = null;
         #endregion
         protected override void Prepare()
         {
@@ -64,9 +65,14 @@ namespace ViennaAdvantageServer.Process
             }
             C_Period_ID = mf.GetC_Period_ID();
             Currency = Util.GetValueOfInt(mf.Get_Value("C_Currency_ID"));
-
-
-            StdPrecision= Util.GetValueOfInt(DB.ExecuteScalar("SELECT StdPrecision FROM C_Currency WHERE C_Currency_ID=" + Currency, null, null));
+           
+            //get stdprecison and currency code for master forecast currenccy
+            DataSet ds = DB.ExecuteDataset("SELECT ISO_CODE,StdPrecision FROM C_Currency WHERE C_Currency_ID = " + Currency);
+            if (ds != null && ds.Tables[0].Rows.Count > 0)
+            {
+                ToCurrencyName = Util.GetValueOfString(ds.Tables[0].Rows[0]["ISO_CODE"]);
+                StdPrecision = Util.GetValueOfInt(ds.Tables[0].Rows[0]["StdPrecision"]);
+            }
 
             //Get Table_Id to create PO Object
             // sql = @"SELECT AD_TABLE_ID  FROM AD_TABLE WHERE tablename LIKE 'VA073_MasterForecastLineDetail' AND IsActive = 'Y'";
@@ -94,10 +100,14 @@ namespace ViennaAdvantageServer.Process
                 {
                     //sql = "SELECT DISTINCT(M_Product_ID) FROM c_forecastline fl INNER JOIN c_forecast f ON (fl.c_forecast_id = f.c_forecast_id) WHERE f.c_period_id = " + C_Period_ID + " AND f.ad_client_id = " + GetCtx().GetAD_Client_ID() + " AND f.isactive = 'Y' AND f.processed = 'Y'";
                     //DataSet idr = null;
-                    sql = "SELECT DISTINCT(M_Product_ID), SUM(nvl(qtyentered,0)) AS Quantity,SUM(nvl(pricestd,0)) AS Price,f.C_Currency_ID FROM c_forecastline fl " +
-                        "INNER JOIN c_forecast f ON (fl.c_forecast_id = f.c_forecast_id) WHERE f.c_period_id =  " + C_Period_ID +
+                    sql = "SELECT DISTINCT(M_Product_ID), SUM(nvl(qtyentered,0)) AS Quantity,SUM(nvl(pricestd,0)) AS Price,f.C_Currency_ID,C_Currency.ISO_CODE FROM c_forecastline fl " +
+                        "INNER JOIN c_forecast f ON (fl.c_forecast_id = f.c_forecast_id) " +
+                        "INNER JOIN C_Currency ON f.C_Currency_ID=C_Currency.C_Currency_ID " +
+                        "WHERE f.c_period_id =  " + C_Period_ID +
                         " AND f.ad_client_id = " + mf.GetAD_Client_ID() + " AND f.isactive = 'Y' AND f.processed = 'Y' " +
-                        "Group BY M_product_ID,f.C_Currency_ID";
+                        "Group BY M_product_ID,f.C_Currency_ID,C_Currency.ISO_CODE " +
+                        "ORDER BY M_Product_ID ASC";
+                        
                     try
                     {
 
@@ -130,56 +140,97 @@ namespace ViennaAdvantageServer.Process
                                      Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
                                 totalQtyTeam = Util.GetValueOfDecimal(dsForecast.Tables[0].Rows[i]["Quantity"]);
                                 //}
-
+                                if (totalPriceTeam==0)
+                                {
+                                    if (Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["C_Currency_ID"]) != Currency) 
+                                    {
+                                        //conversion not found
+                                        log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsForecast.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                        msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsForecast.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName; 
+                                    }
+                                    else
+                                    {
+                                        //0 Price found
+                                        log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFound"));
+                                        msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                                    }
+                                    break;
+                                }
                                 if (mf.IsIncludeOpp())
                                 {
-                                    sql = "SELECT SUM(NVL(pl.plannedqty,0)) AS Quantity ,SUM(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) AS Price, " +
-                                          "p.C_Currency_ID,pl.C_UOM_ID" +
-                                          " FROM c_projectline pl INNER JOIN c_project p ON (p.c_project_id = pl.c_project_id) "
-                                          + " WHERE " +
-                                          "pl.planneddate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") "
-                                          + " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
-                                          "AND pl.m_product_id =  " + Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]) +
-                                          " AND p.c_order_id IS NULL AND p.ref_order_id IS NULL AND pl.isactive = 'Y' "
-                                          + "GROUP BY C_Currency_ID,pl.C_UOM_ID";
+                                    //if product is same then donot fetch data from opportunity 
+                                    if (i > 0 && Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]) == Util.GetValueOfInt(dsForecast.Tables[0].Rows[i - 1]["M_Product_ID"]))
+                                    {
+                                        totalQtyOpp = 0;
+                                        totalPriceOpp = 0;
+                                    }
+                                    else 
+                                    { 
+                                        sql = "SELECT SUM(NVL(pl.plannedqty,0)) AS Quantity ,SUM(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) AS Price, " +
+                                              "p.C_Currency_ID,pl.C_UOM_ID,C_Currency.ISO_CODE" +
+                                              " FROM c_projectline pl INNER JOIN c_project p ON (p.c_project_id = pl.c_project_id) " +
+                                              "INNER JOIN C_Currency ON p.C_Currency_ID=C_Currency.C_Currency_ID " +
+                                              " WHERE " +
+                                              "pl.planneddate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") "
+                                              + " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
+                                              "AND pl.m_product_id =  " + Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]) +
+                                              " AND p.c_order_id IS NULL AND p.ref_order_id IS NULL AND pl.isactive = 'Y' "
+                                              + "GROUP BY p.C_Currency_ID,pl.C_UOM_ID,C_Currency.ISO_CODE";
 
-                                    //totalQtyOpp = Util.GetValueOfDecimal(DB.ExecuteScalar(sql, null, Get_Trx()));
+                                        //totalQtyOpp = Util.GetValueOfDecimal(DB.ExecuteScalar(sql, null, Get_Trx()));
 
-                                    //sql = " SELECT SUM(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) FROM c_projectline pl INNER JOIN c_project p ON (p.c_project_id = pl.c_project_id) "
-                                    //    + " WHERE " +
-                                    //    " pl.planneddate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") "
-                                    //    + " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
-                                    //    " AND pl.m_product_id =  " + Util.GetValueOfInt(idr[0]) +
-                                    //    " AND p.c_order_id IS NULL AND p.ref_order_id IS NULL AND pl.isactive = 'Y' AND p.ad_client_id = " + mf.GetAD_Client_ID();
-                                    totalQtyOpp = 0;
-                                    totalPriceOpp = 0;
-                                    dsOpp = DB.ExecuteDataset(sql, null, mf.Get_Trx());
-                                    if (dsOpp != null && dsOpp.Tables[0].Rows.Count > 0)
-                                    {                                     
-                                        for (int k = 0; k < dsOpp.Tables[0].Rows.Count; k++)
+                                        //sql = " SELECT SUM(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) FROM c_projectline pl INNER JOIN c_project p ON (p.c_project_id = pl.c_project_id) "
+                                        //    + " WHERE " +
+                                        //    " pl.planneddate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") "
+                                        //    + " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
+                                        //    " AND pl.m_product_id =  " + Util.GetValueOfInt(idr[0]) +
+                                        //    " AND p.c_order_id IS NULL AND p.ref_order_id IS NULL AND pl.isactive = 'Y' AND p.ad_client_id = " + mf.GetAD_Client_ID();
+                                        totalQtyOpp = 0;
+                                        totalPriceOpp = 0;
+                                        dsOpp = DB.ExecuteDataset(sql, null, mf.Get_Trx());
+                                        if (dsOpp != null && dsOpp.Tables[0].Rows.Count > 0)
                                         {
-                                            //Conversion from Project to MasterForecast Currency
-                                            totalPriceOpp+= MConversionRate.Convert(mf.GetCtx(), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Price"]),
-                                                 Util.GetValueOfInt(dsOpp.Tables[0].Rows[k]["C_Currency_ID"]), Currency,
-                                                 Util.GetValueOfDateTime(mf.Get_Value("TRXDATE")),
-                                                 Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
-
-                                            //Conversion from BaseUOM to UOM on Project Line
-                                            decimal? ConvertedQty= MUOMConversion.ConvertProductFrom(mf.GetCtx(), Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]),
-                                            Util.GetValueOfInt(dsOpp.Tables[0].Rows[k]["C_UOM_ID"]), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Quantity"]));
-
-                                            if (ConvertedQty == null)
+                                            for (int k = 0; k < dsOpp.Tables[0].Rows.Count; k++)
                                             {
-                                                totalQtyOpp+= Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Quantity"]);
-                                            }
-                                            else
-                                            {
-                                                totalQtyOpp += ConvertedQty;
+                                                //Conversion from Project to MasterForecast Currency
+                                                totalPriceOpp += MConversionRate.Convert(mf.GetCtx(), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Price"]),
+                                                     Util.GetValueOfInt(dsOpp.Tables[0].Rows[k]["C_Currency_ID"]), Currency,
+                                                     Util.GetValueOfDateTime(mf.Get_Value("TRXDATE")),
+                                                     Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
+
+                                                //Conversion from BaseUOM to UOM on Project Line
+                                                decimal? ConvertedQty = MUOMConversion.ConvertProductFrom(mf.GetCtx(), Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]),
+                                                Util.GetValueOfInt(dsOpp.Tables[0].Rows[k]["C_UOM_ID"]), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Quantity"]));
+
+                                                if (totalPriceOpp == 0 )
+                                                {
+                                                    if (Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_Currency_ID"]) != Currency)
+                                                    {
+                                                        //conversion not found
+                                                        log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                                        msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName;
+                                                    }
+                                                    else
+                                                    {
+                                                        //0 Price found
+                                                        log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFound"));
+                                                        msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                                                    }
+                                                    break;
+                                                }
+                                                if (ConvertedQty == null)
+                                                {
+                                                    totalQtyOpp += Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[k]["Quantity"]);
+                                                }
+                                                else
+                                                {
+                                                    totalQtyOpp += ConvertedQty;
+                                                }
                                             }
                                         }
                                     }
+                                 
                                 }
-
 
                                 Decimal? totalPrice = Decimal.Add(totalPriceTeam.Value, totalPriceOpp.Value);
                                 Decimal? totalQty = Decimal.Add(totalQtyTeam.Value, totalQtyOpp.Value);
@@ -218,17 +269,30 @@ namespace ViennaAdvantageServer.Process
                         log.Log(Level.SEVERE, e.Message);
                     }
 
+                    if (!string.IsNullOrEmpty(msg))
+                    {
+                        mf.Get_Trx().Rollback();
+                        return msg;
+                    }
                     if (mf.IsIncludeOpp())
                     {
                         OnlyOpportunityProducts();
+                        if (!string.IsNullOrEmpty(msg))
+                        {
+                            mf.Get_Trx().Rollback();
+                            return msg;
+                        }
                     }
-                    mf.SetCurrentVersion(true);
-                    mf.SetProcessed(true);
+                  
+                        mf.SetCurrentVersion(true);
+                        mf.SetProcessed(true);
+
                     if (!mf.Save())
                     {
                         log.SaveError("MasterForecastNotSaved", "MasterForecastNotSaved");
                         return GetRetrievedError(mf, "MasterForecastNotSaved");
                     }
+                    
                     msg = Msg.GetMsg(GetCtx(), "ProcessCompleted");
 
                 }
@@ -237,17 +301,33 @@ namespace ViennaAdvantageServer.Process
                 {
                     //VA073 module installed -- Consolidate FROM Sales order , opportunity , Team Forecast
                     TeamForecastProduct();
+                    if (!string.IsNullOrEmpty(msg))
+                    {
+                        mf.Get_Trx().Rollback();
+                        return msg;
+                    }
                     if (mf.IsIncludeOpp())
                     {
                         OnlyOpportunityProducts();
+                        if (!string.IsNullOrEmpty(msg))
+                        {
+                            mf.Get_Trx().Rollback();
+                            return msg;
+                        }
                     }
                     if (Util.GetValueOfBool(mf.Get_Value("VA073_IsIncludeOpenSO")))
                     {
                         SalesOrderProducts();
+                        if (!string.IsNullOrEmpty(msg))
+                        {
+                            mf.Get_Trx().Rollback();
+                            return msg;
+                        }
                     }
                     if (Count == 0)
                     {
-                        mf.Get_Trx().Rollback();
+                        //if no product lines created 
+                       return Msg.GetMsg(mf.GetCtx(), "NoDataFound");                      
                     }
                     else
                     {
@@ -261,7 +341,7 @@ namespace ViennaAdvantageServer.Process
 
                     }
 
-                    msg = Msg.GetMsg(mf.GetCtx(), "ProductLinesDetailCreated") + Count;
+                    msg = Msg.GetMsg(mf.GetCtx(), "ProductLinesCreated") + Count;
                 }
             }
             return msg;
@@ -280,16 +360,17 @@ namespace ViennaAdvantageServer.Process
                 //    + " INNER JOIN c_forecast f ON (fl.c_forecast_id = f.c_forecast_id) WHERE f.c_period_id = " + C_Period_ID
                 //    + " AND f.ad_client_id = " + GetCtx().GetAD_Client_ID() + " AND fl.isactive = 'Y')";
                 sql = " SELECT DISTINCT(pl.m_product_id),SUM(nvl(pl.plannedqty,0)) AS Quantity ,SUM(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) AS Price, " +
-                        "p.C_Currency_ID,pl.C_UOM_ID " +
+                        "p.C_Currency_ID,pl.C_UOM_ID, c.ISO_CODE " +
                         "FROM c_projectline pl " +
                         "INNER JOIN c_project p ON p.c_project_id = pl.c_project_id " +
+                        "INNER JOIN C_Currency c ON p.C_Currency_ID=c.C_Currency_ID " +
                         "WHERE p.c_order_id IS NULL"
                         //       + " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
                         + " AND p.ref_order_id IS NULL AND pl.m_product_id NOT IN (SELECT m_product_id FROM c_masterforecastline WHERE isactive = 'Y'" +
                         " AND c_masterforecast_id = " + GetRecord_ID() + ") AND p.AD_CLient_ID= " +mf.GetAD_Client_ID()+
                         " AND pl.planneddate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") "+
                         " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
-                        " GROUP BY C_Currency_ID,pl.C_UOM_ID,pl.m_product_id";
+                        " GROUP BY p.C_Currency_ID,pl.C_UOM_ID,pl.m_product_id,c.ISO_CODE";
 
                 //IDataReader idr = null;
                 try
@@ -318,6 +399,7 @@ namespace ViennaAdvantageServer.Process
                     {
                         for (int i = 0; i < dsOpp.Tables[0].Rows.Count; i++)
                         {
+                           
                             //Conversion from Project to MasterForecast Currency
                             totalPriceOpp = MConversionRate.Convert(mf.GetCtx(), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[i]["Price"]),
                                  Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_Currency_ID"]), Currency,
@@ -327,7 +409,23 @@ namespace ViennaAdvantageServer.Process
                             //Conversion from BaseUOM to UOM on Project Line
                             totalQtyOpp = MUOMConversion.ConvertProductFrom(mf.GetCtx(), Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["M_Product_ID"]),
                                 Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_UOM_ID"]), Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[i]["Quantity"]));
-                         
+
+                            if (totalPriceOpp == 0)
+                            {
+                                if (Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_Currency_ID"]) != Currency)
+                                {
+                                    // conversion not found 
+                                    log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                    msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName;
+                                }
+                                else
+                                {
+                                    //0 price found
+                                    log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFound"));
+                                    msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                                }
+                                break;
+                            }
                             if (totalQtyOpp == null)
                             {
                                 totalQtyOpp = Util.GetValueOfDecimal(dsOpp.Tables[0].Rows[i]["Quantity"]);
@@ -371,14 +469,31 @@ namespace ViennaAdvantageServer.Process
                 //VA073_ Module is Installed
 
                 sql = "SELECT pl.m_product_id, p.c_project_id,p.C_Currency_ID,pl.c_projectline_id, pl.plannedqty,pl.C_UOM_ID," +
-                    "(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) AS Price,pl.M_AttributeSetInstance_ID " +
+                    "(NVL(pl.plannedqty,0) * NVL(pl.plannedprice,0)) AS Price,pl.M_AttributeSetInstance_ID,c.ISO_CODE " +
                     " FROM C_Project p " +
-                    "INNER JOIN C_ProjectLine pl ON p.C_Project_ID = pl.C_Project_ID" +
-                    " WHERE p.c_order_id IS NULL AND p.ref_order_id IS NULL AND c_period_id = " + C_Period_ID + " AND p.AD_Org_ID = " + mf.GetAD_Org_ID() +
+                    "INNER JOIN C_ProjectLine pl ON p.C_Project_ID = pl.C_Project_ID " +
+                    "INNER JOIN C_Currency c ON p.C_Currency_ID=c.C_Currency_ID " +
+                    " WHERE p.c_order_id IS NULL AND p.ref_order_id IS NULL  AND p.AD_Org_ID = " + mf.GetAD_Org_ID() +
                     " AND C_ProjectLine_ID NOT IN (SELECT C_ProjectLine_ID FROM va073_masterforecastlinedetail WHERE " +
                     "AD_Org_ID = " + mf.GetAD_Org_ID() + " AND C_Period_ID=" + C_Period_ID + ") AND NVL(pl.M_Product_ID,0)>0 ";
 
 
+                //if (mf.Get_Value("VA073_OppDateType").Equals("EDD"))
+                //{
+                //    sql += " AND p.C_EnquiryRdate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
+                //           " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") ";
+                //}
+
+                //else if (mf.Get_Value("VA073_OppDateType").Equals("PDD"))
+                //{
+                //    sql += " AND p.C_ProposalDdate BETWEEN (SELECT startdate FROM c_period WHERE c_period_id = " + C_Period_ID + ") " +
+                //           " AND (SELECT enddate FROM c_period WHERE c_period_id = " + C_Period_ID + ") ";
+                //}
+
+                //else if (mf.Get_Value("VA073_OppDateType").Equals("OPR"))
+               // {
+                    sql += " AND c_period_id = " + C_Period_ID;
+               // }
                 sql = MRole.GetDefault(GetCtx()).AddAccessSQL(sql, "C_Project", true, true); // fully qualified - RO
 
                 dsOpp = new DataSet();
@@ -391,6 +506,7 @@ namespace ViennaAdvantageServer.Process
                         mfLine = GenerateMasterForecast(Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["M_Product_ID"]), Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["M_AttributeSetInstance_ID"]), 0, 0, 0);
                         if (!mfLine.Save())
                         {
+                            Count++;
                             ValueNamePair vp = VLogger.RetrieveError();
                             if (vp != null)
                             {
@@ -420,6 +536,23 @@ namespace ViennaAdvantageServer.Process
                             Util.GetValueOfDateTime(mf.Get_Value("TRXDATE")),
                             Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
 
+                            if (ConvertedAmt == 0)
+                            {
+                                if (Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_Currency_ID"]) != Currency)
+                                {
+                                    // conversion not found 
+                                    log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                    msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOpp.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName;
+                                }
+                                else
+                                {
+                                    //0 price found
+                                    log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFoundOpportunity") + " " + Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["c_projectline_id"]));
+                                    msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                                }
+                                break;
+                            }
+
                             //Create Product Line Details
                             po = GenerateProductLineDetails(mfLine, LineNo, 0, 0, Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_Project_ID"]),
                                 Util.GetValueOfInt(dsOpp.Tables[0].Rows[i]["C_ProjectLine_ID"]), 0, 0,
@@ -441,7 +574,6 @@ namespace ViennaAdvantageServer.Process
                             }
                             else
                             {
-                                Count++;
                                 LineNo += 10;
                                 //Update quantities AND price at Product line 
                                 sql = "UPDATE c_masterforecastline SET " +
@@ -475,17 +607,27 @@ namespace ViennaAdvantageServer.Process
         private int SalesOrderProducts()
         {
             sql = "SELECT ol.m_product_id,ol.QtyOrdered,M_AttributeSetInstance_ID,ol.C_UOM_ID," +
-                 " ol.C_OrderLine_ID,o.C_Order_ID,(NVL(PriceEntered,0) * NVL(QtyEntered,0)) AS Price,o.C_Currency_ID FROM C_Order o " +
+                 " ol.C_OrderLine_ID,o.C_Order_ID,(NVL(PriceEntered,0) * NVL(QtyEntered,0)) AS Price,o.C_Currency_ID,c.ISO_CODE FROM C_Order o " +
                  " INNER JOIN C_OrderLine ol ON o.C_Order_ID = ol.C_Order_ID " +
                  " INNER JOIN C_Doctype d ON o.c_DocTypeTarget_ID = d.C_Doctype_ID   " +
+                  "INNER JOIN C_Currency c ON o.C_Currency_ID=c.C_Currency_ID " +
                  " WHERE d.DocBaseType='" + MDocBaseType.DOCBASETYPE_SALESORDER + "' " +
                  " AND d.DocSubTypeSo NOT IN ('" + MDocType.DOCSUBTYPESO_BlanketOrder + "','" + MDocType.DOCSUBTYPESO_Proposal + "')" +
                  " AND o.IsSOTrx='Y' AND o.IsReturnTrx='N' AND o.AD_Org_ID = " + mf.GetAD_Org_ID() +
-                 " AND o.DateOrdered BETWEEN (SELECT startdate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ")  " +
-                 " AND (SELECT enddate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ") AND ol.QtyOrdered > ol.QtyDelivered " +
+                
                  " AND ol.C_OrderLine_ID NOT IN (SELECT C_OrderLine_ID FROM va073_masterforecastlinedetail WHERE " +
-                 "AD_Org_ID = " + mf.GetAD_Org_ID() + " AND C_Period_ID=" + C_Period_ID + ") AND NVL(ol.M_Product_ID,0)>0 AND o.DocStatus IN('CO','CL') ";
+                 "AD_Org_ID = " + mf.GetAD_Org_ID() + " AND C_Period_ID=" + C_Period_ID + ") AND NVL(ol.M_Product_ID,0)>0 AND o.DocStatus IN('CO','CL') AND ol.QtyOrdered > ol.QtyDelivered ";
 
+            //if (mf.Get_Value("VA073_SalesDateType").Equals("DO"))//date ordered
+            //{
+                sql += " AND o.DateOrdered BETWEEN (SELECT startdate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ")  " +
+                 " AND (SELECT enddate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ")";
+           // }
+            //else if (mf.Get_Value("VA073_SalesDateType").Equals("DP"))
+            //{
+            //    sql += " AND o.DatePromised BETWEEN (SELECT startdate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ")  " +
+            //     " AND (SELECT enddate FROM C_Period WHERE C_Period_ID = " + C_Period_ID + ")"; 
+            //}
             sql = MRole.GetDefault(GetCtx()).AddAccessSQL(sql, "C_Order", true, true); // fully qualified - RO
 
             dsOrder = new DataSet();
@@ -499,6 +641,7 @@ namespace ViennaAdvantageServer.Process
                              Util.GetValueOfInt(dsOrder.Tables[0].Rows[i]["M_AttributeSetInstance_ID"]), 0, 0, 0);
                     if (!mfLine.Save())
                     {
+                        Count++;
                         ValueNamePair vp = VLogger.RetrieveError();
                         if (vp != null)
                         {
@@ -519,6 +662,22 @@ namespace ViennaAdvantageServer.Process
                             Util.GetValueOfDateTime(mf.Get_Value("TRXDATE")),
                             Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
 
+                        if (ConvertedAmt == 0)
+                        {
+                            if (Util.GetValueOfInt(dsOrder.Tables[0].Rows[i]["C_Currency_ID"]) != Currency)
+                            {
+                                // conversion not found 
+                                log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOrder.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsOrder.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName;                               
+                            }
+                            else
+                            {
+                                //0 price found
+                                log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFoundOrder") +" "+ Util.GetValueOfInt(dsOrder.Tables[0].Rows[i]["C_OrderLine_ID"]));
+                                msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                            }
+                            break;
+                        }
                         //Create Product Line Details
                         po = GenerateProductLineDetails(mfLine, LineNo, Util.GetValueOfInt(dsOrder.Tables[0].Rows[i]["C_Order_ID"]),
                                Util.GetValueOfInt(dsOrder.Tables[0].Rows[i]["C_OrderLine_ID"]), 0, 0, 0, 0,
@@ -541,7 +700,6 @@ namespace ViennaAdvantageServer.Process
                         }
                         else
                         {
-                            Count++;
                             LineNo += 10;
                             //Update quantities AND price at Product line 
                             sql = "UPDATE c_masterforecastline SET " +
@@ -576,9 +734,10 @@ namespace ViennaAdvantageServer.Process
         {
 
             sql = @"SELECT fl.M_Product_ID,fl.M_AttributeSetInstance_ID,fl.qtyentered,fl.BaseQty,f.C_Forecast_ID,
-                    C_ForecastLine_ID,f.C_Period_ID,fl.C_UOM_ID,NVL(pricestd,0) AS Price,f.C_Currency_ID
+                    C_ForecastLine_ID,f.C_Period_ID,fl.C_UOM_ID,NVL(pricestd,0) AS Price,f.C_Currency_ID,c.ISO_CODE
                     FROM C_Forecast f " +
                     " INNER JOIN C_Forecastline fl ON fl.c_forecast_id = f.c_forecast_id " +
+                    "INNER JOIN C_Currency c ON f.C_Currency_ID=c.C_Currency_ID " +
                     " WHERE f.c_period_id = " + C_Period_ID + " AND f.AD_Org_ID = " + mf.GetAD_Org_ID() +
                     " AND f.isactive = 'Y' AND f.processed = 'Y'" +
                     " AND C_ForecastLine_ID NOT IN (SELECT C_ForecastLine_ID FROM VA073_MasterForecastlinedetail WHERE " +
@@ -596,6 +755,7 @@ namespace ViennaAdvantageServer.Process
                     mfLine = GenerateMasterForecast(Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_Product_ID"]), Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["M_AttributeSetInstance_ID"]), 0, 0, 0);
                     if (!mfLine.Save())
                     {
+                        Count++;
                         ValueNamePair vp = VLogger.RetrieveError();
                         if (vp != null)
                         {
@@ -616,6 +776,22 @@ namespace ViennaAdvantageServer.Process
                             Util.GetValueOfDateTime(mf.Get_Value("TRXDATE")),
                             Util.GetValueOfInt(mf.Get_Value("C_ConversionType_ID")), mf.GetAD_Client_ID(), mf.GetAD_Org_ID());
 
+                        if (ConvertedAmt == 0)
+                        {
+                            if (Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["C_Currency_ID"]) != Currency)
+                            {
+                                // conversion not found 
+                                log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsForecast.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName);
+                                msg = Msg.GetMsg(GetCtx(), "ConversionNotFound") + " " + dsForecast.Tables[0].Rows[i]["ISO_CODE"] + Msg.GetMsg(GetCtx(),"To") + ToCurrencyName;
+                            }
+                            else
+                            {
+                                //0 price found
+                                log.Log(Level.SEVERE, Msg.GetMsg(GetCtx(), "PriceNotFoundForecast") + " " + Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["C_ForecastLine_ID"]));
+                                msg = Msg.GetMsg(GetCtx(), "PriceNotFound");
+                            }
+                            break;
+                        }
                         //Create Product Line Details
                         po = GenerateProductLineDetails(mfLine, LineNo, 0, 0, 0, 0, Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["C_Forecast_ID"]),
                                Util.GetValueOfInt(dsForecast.Tables[0].Rows[i]["C_ForecastLine_ID"]),
@@ -637,8 +813,7 @@ namespace ViennaAdvantageServer.Process
                         }
                         else
                         {
-                            //Update quantities AND Price at Product line
-                            Count++;
+                            //Update quantities AND Price at Product line                            
                             LineNo += 10;
                             sql = "UPDATE c_masterforecastline SET " +
                                     "ForcastQty=(SELECT NVL(SUM(QtyEntered),0) FROM VA073_MasterForecastLineDetail WHERE NVL(C_Forecast_ID,0)>0 AND c_masterforecastline_ID=" + mfLine.GetC_MasterForecastLine_ID() + "), " +
@@ -685,7 +860,7 @@ namespace ViennaAdvantageServer.Process
             }
             else
             {
-                mfLine.SetForcastQty(totalQtyTeam );
+                mfLine.SetForcastQty(totalQtyTeam + mfLine.GetForcastQty());
                 mfLine.SetOppQty(totalQtyOpp + mfLine.GetOppQty());
             }
             //Decimal? totalqty = Decimal.Add(mfLine.GetForcastQty(), mfLine.GetOppQty());
@@ -697,7 +872,21 @@ namespace ViennaAdvantageServer.Process
                 avgPrice = Decimal.Round(avgPrice.Value, StdPrecision, MidpointRounding.AwayFromZero);
                 mfLine.SetPrice(avgPrice); 
             }
-            //Team Forecast case
+            //calculate average price for Team forecast case only 
+            else if (totalQtyOpp == 0 && totalQtyTeam > 0 && qty==0)
+            {
+                avgPrice = ((mfLine.GetPrice() * Util.GetValueOfDecimal(mfLine.Get_ValueOld("ForcastQty"))) + (avgPrice * totalQtyTeam)) / mfLine.GetTotalQty();
+                avgPrice = Decimal.Round(avgPrice.Value, StdPrecision, MidpointRounding.AwayFromZero);
+                mfLine.SetPrice(avgPrice);
+            }  
+            //calculate average price for multi currency case. if oppqty exist previously and currently it returns 0
+            else if(totalQtyOpp == 0 && totalQtyTeam > 0 && qty>0)
+            {
+                avgPrice = ((mfLine.GetPrice() * Util.GetValueOfDecimal(mfLine.Get_ValueOld("TotalQty"))) + (avgPrice * totalQtyTeam)) / mfLine.GetTotalQty();
+                avgPrice = Decimal.Round(avgPrice.Value, StdPrecision, MidpointRounding.AwayFromZero);
+                mfLine.SetPrice(avgPrice);
+            }
+            //Team Forecast product case 
             else
             {
                 mfLine.SetPrice(avgPrice);
@@ -706,7 +895,6 @@ namespace ViennaAdvantageServer.Process
             mfLine.SetPlannedRevenue(planRevenue);
 
             return mfLine;
-
         }
 
         /// <SUMmary>
