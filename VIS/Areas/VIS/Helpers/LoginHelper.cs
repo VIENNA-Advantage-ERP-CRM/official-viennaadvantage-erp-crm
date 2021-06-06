@@ -748,5 +748,32 @@ namespace VIS.Helpers
             }
             return isValid;
         }
+
+        public static Dictionary<string, object> GetTokenDetails(string TokenNum)
+        {
+            Dictionary<string, object> retRes = new Dictionary<string, object>();
+            retRes.Add("Success", false);
+            int validationTime = Util.GetValueOfInt(DB.ExecuteScalar("SELECT Value FROM AD_SysConfig WHERE Name = 'LOGIN_TOKEN_EXPIRE_TIME'"));
+            if (validationTime <= 0)
+                validationTime = 15;
+            SqlParameter[] param = new SqlParameter[1];
+            param[0] = new SqlParameter("@p1", TokenNum);
+            DataSet ds = DB.ExecuteDataset("SELECT TokenTime, Value, Password FROM AD_User WHERE LoginToken = @p1", param);
+            if (ds != null && ds.Tables[0].Rows.Count > 0)
+            {
+                DateTime? dTime = Util.GetValueOfDateTime(ds.Tables[0].Rows[0]["Tokentime"]);
+                DateTime? curTime = System.DateTime.Now.ToUniversalTime();
+                int diff = Util.GetValueOfInt((curTime - dTime).Value.TotalSeconds);
+                if (diff <= 15)
+                {
+                    retRes.Add("User", ds.Tables[0].Rows[0]["Value"]);
+                    retRes.Add("Password", ds.Tables[0].Rows[0]["Password"].ToString());
+                    retRes["Success"] = true;
+                    return retRes;
+                }
+            }
+
+            return retRes;
+        }
     }
 }
