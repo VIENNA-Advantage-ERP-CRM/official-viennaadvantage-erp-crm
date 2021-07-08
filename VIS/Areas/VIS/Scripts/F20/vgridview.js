@@ -510,7 +510,71 @@
                             //d = w2utils.encodeTags(d);
                         }
 
-                        return d;
+                        var strDiv = "";
+                        if (VIS.DisplayType.List == l.displayType) {
+                            var lType = l.getLovIconType(val, true);
+
+                            var listIcon = l.getLOVIconElement(val, true);
+                            if (!listIcon)
+                                return d;
+                            // If both , then show text and image
+                            if (lType == "B") {
+                                strDiv = "<div class='vis-grid-td-icon-grp'>"
+                                    + "<div class='vis-grid-row-td-icon'> " + listIcon + "</div> ";
+                                strDiv += "<span> " + d + "</span ><div>";
+                            }
+                            // if Text, then show text only
+                            else if (lType == "T") {
+                                return d;
+                            }
+                                //Show icon only
+                            else if (lType == "I") {
+                                strDiv = "<div class='vis-grid-td-icon-grp'>"
+                                    + "<div class='vis-grid-row-td-icon'> " + listIcon + "</div> ";
+                                strDiv += "<div>";
+                            }
+                        }
+
+                        else
+                        if (d && d.indexOf("Images/") > -1) {// Based on sequence of image in idenitifer, perform logic and display image with text
+
+                            var img = d.substring(d.indexOf("Images/") + 7, d.lastIndexOf("^^"));
+                            img = VIS.Application.contextUrl + "Images/Thumb32x32/" + img;
+
+                            d = d.replace("^^" + d.substring(d.indexOf("Images/"), d.lastIndexOf("^^") + 2), "^^^")
+                            if (d.indexOf("Images/") > -1)
+                                d = d.replace(d.substring(d.indexOf("Images/"), d.lastIndexOf("^^") + 2), "^^^");
+
+                            d = d.split("^^^");
+                            strDiv = "<div class='vis-grid-td-icon-grp'>";
+                            var highlightChar = '';
+                            for (var c = 0; c < d.length; c++) {
+                                if (d[c].trim().length > 0) {
+                                    if (highlightChar.length == 0)
+                                        highlightChar = d[c].trim().substring(0, 1).toUpper();
+
+                                    if (c > 0 && img.indexOf("nothing.png") > -1 && highlightChar.length>0) {
+                                        strDiv += "<div class='vis-grid-row-td-icon'><span>" + highlightChar + "</span></div>";
+                                    }
+                                    strDiv += "<span>" + d[c] + "</span>";
+                                }
+                                if (c == 0 || img.indexOf("nothing.png") > -1) {
+                                    if (img.indexOf("nothing.png")== -1)
+                                    {
+                                        strDiv += "<div class='vis-grid-row-td-icon'><img src='" + img + "?" + new Date().getTime() + "' ></img></div>";
+                                    }
+                                   
+                                }
+                            }
+                            +"</div > ";
+
+                        }
+                        
+
+                        if (strDiv == "")
+                            return d;
+
+                        return strDiv;
                         //return '<span>' + d + '</span>';
                     }
                 }

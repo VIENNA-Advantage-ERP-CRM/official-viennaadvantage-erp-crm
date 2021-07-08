@@ -301,21 +301,24 @@ namespace VAdvantage.Classes
         /// <returns></returns>
         public static VLookUpInfo GetLookUp_List(Language language, int AD_Reference_Value_ID)
         {
-            StringBuilder realSQL = new StringBuilder("SELECT NULL, AD_Ref_List.Value,");
-            String displayCol = "AD_Ref_List.Name";
+            StringBuilder realSQL = new StringBuilder("SELECT NULL, rl.Value,");
+            String displayCol = "rl.Name";
             if (Utility.Env.IsBaseLanguage(language, "AD_Ref_List"))
             {
-                realSQL.Append(displayCol + ", AD_Ref_List.IsActive FROM AD_Ref_List");
+                realSQL.Append(displayCol + ", rl.IsActive, NVL(img.ImageURL,img.FontName),ref.ListDisplayOption FROM AD_Ref_List rl");
             }
             else
             {
                 displayCol = "trl.Name";
-                realSQL.Append(displayCol + ", AD_Ref_List.IsActive "
-                    + "FROM AD_Ref_List INNER JOIN AD_Ref_List_Trl trl "
-                    + " ON (AD_Ref_List.AD_Ref_List_ID=trl.AD_Ref_List_ID AND trl.AD_Language='")
+                realSQL.Append(displayCol + ", rl.IsActive, , NVL(img.ImageURL,img.FontName),ref.ListDisplayOption "
+                    + "FROM AD_Ref_List rl INNER JOIN AD_Ref_List_Trl trl "
+                    + " ON (rl.AD_Ref_List_ID=trl.AD_Ref_List_ID AND trl.AD_Language='")
                         .Append(language.GetAD_Language()).Append("')");
             }
-            realSQL.Append(" WHERE AD_Ref_List.AD_Reference_ID=").Append(AD_Reference_Value_ID);
+            realSQL.Append(" JOIN AD_Reference ref ON ref.AD_Reference_ID=rl.AD_Reference_ID ");
+            realSQL.Append(" LEFT OUTER JOIN AD_Image img ON rl.AD_Image_ID=img.AD_Image_ID ");
+
+            realSQL.Append(" WHERE rl.AD_Reference_ID=").Append(AD_Reference_Value_ID);
             realSQL.Append(" ORDER BY 2");
             //
             VLookUpInfo lookupInfo = new VLookUpInfo(realSQL.ToString(), "AD_Ref_List", "AD_Ref_List.Value",
@@ -495,6 +498,8 @@ namespace VAdvantage.Classes
                 dr = DataBase.DB.ExecuteReader(sql);
                 while (dr.Read())
                 {
+                    if (dr[0].ToString().Equals("AD_Image_ID"))
+                        continue;
                     LookupDisplayColumn ldc = new LookupDisplayColumn(dr[0].ToString(),
                         "Y".Equals(dr[1].ToString()), Utility.Util.GetValueOfInt(dr[2]), Utility.Util.GetValueOfInt(dr[3]));
                     list.Add(ldc);
@@ -532,6 +537,8 @@ namespace VAdvantage.Classes
                     dr = DataBase.DB.ExecuteReader(sql1);
                     while (dr.Read())
                     {
+                        if (dr[0].ToString().Equals("AD_Image_ID"))
+                            continue;
                         count++;
                         LookupDisplayColumn ldc = new LookupDisplayColumn(dr[0].ToString(),
                             "Y".Equals(dr[1].ToString()), Utility.Util.GetValueOfInt(dr[2]), Utility.Util.GetValueOfInt(dr[3]));
@@ -707,9 +714,22 @@ namespace VAdvantage.Classes
             //  Get Display Column
             for (int i = 0; i < size; i++)
             {
-                if (i > 0)
-                    displayColumn.Append(" ||'_'|| ");
                 LookupDisplayColumn ldc = list[i];
+
+                if (i > 0)
+                {
+                    // if (ldc.ColumnName.ToLower().Equals("ad_image_id") || list[i - 1].ColumnName.ToLower().Equals("ad_image_id"))
+                    if (ldc.ColumnName.ToLower().Equals("ad_image_id"))
+                    {
+                        displayColumn.Append(" ||'^^'|| ");
+                    }
+                    else
+                        if (!list[i - 1].ColumnName.ToLower().Equals("ad_image_id"))
+                        displayColumn.Append(" ||'_'|| ");
+                    else
+                        displayColumn.Append(" ||' '|| ");
+                }
+
                 //jz EDB || problem
                 //if (DatabaseType.IsPostgre)
                 //    displayColumn.Append("COALESCE(TO_CHAR(");
@@ -717,7 +737,13 @@ namespace VAdvantage.Classes
                 //    displayColumn.Append("COALESCE(CONVERT(VARCHAR,");
                 displayColumn.Append("NVL(");
                 //  translated
-                if (ldc.IsTranslated && !Env.IsBaseLanguage(language, tableName))//  DataBase.GlobalVariable.IsBaseLanguage())
+                if (ldc.ColumnName.ToLower().Equals("ad_image_id"))
+                {
+                    string embeddedSQL = "SELECT NVL(ImageURL,'') ||'^^' FROM AD_Image WHERE " + tableName + ".AD_Image_ID=AD_Image.AD_Image_ID";
+                    displayColumn.Append("(").Append(embeddedSQL).Append(")");
+
+                }
+                else if (ldc.IsTranslated && !Env.IsBaseLanguage(language, tableName))//  DataBase.GlobalVariable.IsBaseLanguage())
                     displayColumn.Append(tableName).Append("_Trl.").Append(ldc.ColumnName);
                 //  date
                 else if (DisplayType.IsDate(ldc.DisplayType))
@@ -748,8 +774,9 @@ namespace VAdvantage.Classes
                     if (embeddedSQL != null)
                         displayColumn.Append("(").Append(embeddedSQL).Append(")");
                 }
+
                 //  number
-                else if (DisplayType.IsNumeric(ldc.DisplayType)|| DisplayType.IsID(ldc.DisplayType))
+                else if (DisplayType.IsNumeric(ldc.DisplayType) || DisplayType.IsID(ldc.DisplayType))
                 {
                     displayColumn.Append(DataBase.DB.TO_CHAR(tableName + "." + ldc.ColumnName, ldc.DisplayType, language.GetAD_Language()));
                 }
@@ -767,7 +794,12 @@ namespace VAdvantage.Classes
 
                 //jz EDB || problem
                 //if (DatabaseType.IsPostgre || DatabaseType.IsMSSql)
-                displayColumn.Append(",'')");
+                if (ldc.ColumnName.ToLower().Equals("ad_image_id"))
+                    displayColumn.Append(",'Images/nothing.png^^')");
+                else
+                    displayColumn.Append(",'')");
+
+                //
             }
             return displayColumn;
         }
@@ -967,7 +999,7 @@ namespace VAdvantage.Classes
             // {
             //  _sCacheRefTable[key] = retValue.Clone();
             // }
-            
+
             // display column  for Table type of references
             retValue.displayColSubQ = displayColumn;
 

@@ -2070,3 +2070,41 @@ li.vis-ad-w-p-ap-tp-o-li-selected {
             background: rgba(var(--v-c-secondary), .5);
         }
 /**********************END Filter Panel*/
+
+
+.vis-grid-td-icon-grp {
+    padding: 0px 7px 0px 0px !important;
+    display: flex;
+    align-items: center;
+}
+
+.vis-grid-row-td-icon {
+    height: 32px;
+    width: 32px;
+    display: inline-flex;
+    border-radius: 50%;
+    overflow: hidden;
+    margin: 0 .4rem;
+    min-width: 32px;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(var(--v-c-primary),0.4);
+}
+
+    .vis-grid-row-td-icon span {
+        /* font-weight: bold; */
+        font-size: 24px;
+        /* color: rgba(var(--v-c-primary)); */
+        line-height: 16px;
+        display: contents;
+    }
+.vis-grid-row-td-icon i {
+    font-size: 1.1rem;
+    margin-top: .1rem;
+}
+
+
+
+
+
